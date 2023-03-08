@@ -96,5 +96,4 @@ assert_eq!(
 );
 ```
 
-### Barriers
-Barriers can be accomplished by creating a new `Dag` and `Schedule`.
+![dagga example schedule](example.svg)
