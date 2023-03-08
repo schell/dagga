@@ -96,4 +96,5 @@ assert_eq!(
 );
 ```
 
+You can also have `dagga` create a dot graph file to visualize the schedule (using graphiz or similar):
 ![dagga example schedule](example.svg)
