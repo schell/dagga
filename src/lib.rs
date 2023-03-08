@@ -331,8 +331,12 @@ impl Node {
         self
     }
 
-    pub fn validate(&self) -> Result<(), DaggaError> {
-        Ok(())
+    /// Explicitly set the barrier of this node.
+    ///
+    /// This specifies that this node should run after this barrier.
+    pub fn runs_after_barrier(mut self, barrier: usize) -> Self {
+        self.barrier = barrier;
+        self
     }
 
     pub fn all_inputs(&self) -> FxHashSet<usize> {
