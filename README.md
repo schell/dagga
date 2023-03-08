@@ -1,5 +1,5 @@
 # dagga 🌿
-A crate for scheduling and directed acyclic graphs.
+A crate for scheduling directed acyclic graphs.
 
 ## Features
 
