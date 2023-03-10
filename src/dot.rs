@@ -1,6 +1,6 @@
 //! Support for serializing [`Dag`](super::Dag) as a dot file, for use with
 //! graphiz.
-use std::collections::HashMap;
+use std::marker::PhantomData;
 
 use super::*;
 
@@ -13,22 +13,44 @@ pub enum DotError {
     Dot { source: dot2::Error },
 }
 
+const GHOST_ROOT_NAME: &str = r#"required_resources"#;
+
 /// A `Dag` and some labels for providing user-facing names for resources.
-pub struct DagLegend<T> {
-    pub resources: HashMap<T, String>,
+pub struct DagLegend<T: NodeType> {
+    pub resources: FxHashMap<T::Resource, String>,
     pub name: String,
-    pub dag: Dag<T>,
+    pub dag: Dag<DotNode<T::Resource>>,
+    pub schedule: Schedule<Node<DotNode<T::Resource>>>,
+    pub root: Option<Node<DotNode<T::Resource>>>,
 }
 
 impl<T> DagLegend<T>
 where
-    T: Copy + PartialEq + Eq + std::hash::Hash,
+    T: NodeType,
 {
-    pub fn new(dag: Dag<T>) -> Self {
+    pub fn new(dag: &Dag<T>) -> Self {
+        let mut new_dag = Dag::default();
+        new_dag.add_nodes(dag.nodes().map(node_to_dot_node));
+        let schedule = new_dag.clone().build_schedule().unwrap();
+        let missing_inputs = new_dag.get_missing_inputs();
+        let root = if missing_inputs.is_empty() {
+            None
+        } else {
+            Some({
+                let mut node = Node::new(DotNode {
+                    _phantom: PhantomData,
+                })
+                .with_results(missing_inputs.into_iter());
+                node.name = GHOST_ROOT_NAME.to_string();
+                node
+            })
+        };
         DagLegend {
             resources: Default::default(),
             name: String::new(),
-            dag,
+            dag: new_dag,
+            schedule,
+            root
         }
     }
 
@@ -37,7 +59,7 @@ where
         self
     }
 
-    pub fn with_resource(mut self, name: impl Into<String>, resource: T) -> Self {
+    pub fn with_resource(mut self, name: impl Into<String>, resource: T::Resource) -> Self {
         self.resources.insert(resource, name.into());
         self
     }
@@ -47,15 +69,52 @@ where
     }
 }
 
-pub fn save_as_dot<T>(
+pub fn save_as_dot<T: NodeType>(
     legend: &DagLegend<T>,
     path: impl AsRef<std::path::Path>,
-) -> Result<(), DotError>
-where
-    T: Copy + PartialEq + Eq + std::hash::Hash,
-{
+) -> Result<(), DotError> {
     let mut file = std::fs::File::create(path).context(CreateFileSnafu)?;
-    dot2::render(&legend, &mut file).context(DotSnafu)
+    dot2::render(legend, &mut file).context(DotSnafu)
+}
+
+#[derive(Clone)]
+pub struct DotNode<R> {
+    _phantom: PhantomData<R>,
+}
+
+impl<R: Copy + Eq + std::hash::Hash> NodeType for DotNode<R> {
+    type Resource = R;
+
+    fn name(&self) -> String {
+        String::new()
+    }
+}
+
+fn node_to_dot_node<T: NodeType>(node: &Node<T>) -> Node<DotNode<T::Resource>> {
+    let Node {
+        name,
+        barrier,
+        moves,
+        reads,
+        writes,
+        results,
+        run_before,
+        run_after,
+        ..
+    } = node;
+    Node {
+        inner: DotNode {
+            _phantom: PhantomData,
+        },
+        name: name.clone(),
+        barrier: barrier.clone(),
+        moves: moves.clone(),
+        reads: reads.clone(),
+        writes: writes.clone(),
+        results: results.clone(),
+        run_before: run_before.clone(),
+        run_after: run_after.clone(),
+    }
 }
 
 #[derive(Clone)]
@@ -64,10 +123,10 @@ pub struct Edge<T> {
     node: String,
 }
 
-impl<'a, T: Copy + PartialEq + Eq + std::hash::Hash> dot2::Labeller<'a> for &'a DagLegend<T> {
-    type Node = Node<T>;
+impl<'a, T: NodeType> dot2::Labeller<'a> for DagLegend<T> {
+    type Node = Node<DotNode<T::Resource>>;
 
-    type Edge = Edge<T>;
+    type Edge = Edge<T::Resource>;
 
     type Subgraph = usize;
 
@@ -110,17 +169,59 @@ impl<'a, T: Copy + PartialEq + Eq + std::hash::Hash> dot2::Labeller<'a> for &'a 
     fn subgraph_label(&'a self, batch_index: &Self::Subgraph) -> dot2::label::Text<'a> {
         dot2::label::Text::LabelStr(format!("batch_{batch_index}").into())
     }
+
+    fn node_shape(&'a self, _node: &Self::Node) -> Option<dot2::label::Text<'a>> {
+        None
+    }
+
+    fn node_style(&'a self, n: &Self::Node) -> dot2::Style {
+        println!("{}", n.name);
+        if n.name.as_str() == GHOST_ROOT_NAME {
+            dot2::Style::Dotted
+        } else {
+            dot2::Style::None
+        }
+    }
+
+    fn node_color(&'a self, _node: &Self::Node) -> Option<dot2::label::Text<'a>> {
+        None
+    }
+
+    fn edge_end_arrow(&'a self, _e: &Self::Edge) -> dot2::Arrow {
+        dot2::Arrow::default()
+    }
+
+    fn edge_start_arrow(&'a self, _e: &Self::Edge) -> dot2::Arrow {
+        dot2::Arrow::default()
+    }
+
+    fn edge_style(&'a self, _e: &Self::Edge) -> dot2::Style {
+        dot2::Style::None
+    }
+
+    fn subgraph_style(&'a self, _s: &Self::Subgraph) -> dot2::Style {
+        dot2::Style::None
+    }
+
+    fn subgraph_shape(&'a self, _s: &Self::Subgraph) -> Option<dot2::label::Text<'a>> {
+        None
+    }
+
+    fn subgraph_color(&'a self, _s: &Self::Subgraph) -> Option<dot2::label::Text<'a>> {
+        None
+    }
+
+    fn kind(&self) -> dot2::Kind {
+        dot2::Kind::Digraph
+    }
 }
 
-fn get_edges<T>(dag: &Dag<T>, node: &Node<T>) -> Vec<Edge<T>>
-where
-    T: Copy + PartialEq + Eq + std::hash::Hash,
-{
+fn get_edges<T: NodeType>(dag: &Dag<T>, results: impl IntoIterator<Item = T::Resource>) -> Vec<Edge<T::Resource>> {
     let mut edges = vec![];
-    for result in node.results.iter() {
+    for result in results.into_iter() {
         for downstream_node in dag.get_nodes_with_input(result) {
             edges.push(Edge {
-                rez: *result,
+                rez: result,
                 node: downstream_node.name.clone(),
             });
         }
@@ -128,37 +229,50 @@ where
     edges
 }
 
-impl<'a, T: Copy + PartialEq + Eq + std::hash::Hash> dot2::GraphWalk<'a> for &'a DagLegend<T> {
-    type Node = Node<T>;
+impl<'a, T: NodeType> dot2::GraphWalk<'a> for DagLegend<T> {
+    type Node = Node<DotNode<T::Resource>>;
 
-    type Edge = Edge<T>;
+    type Edge = Edge<T::Resource>;
 
     type Subgraph = usize;
 
     fn nodes(&'a self) -> dot2::Nodes<'a, Self::Node> {
-        let batches: Vec<Node<T>> = self.dag.nodes.values().cloned().collect();
-        batches.into()
+        let mut nodes = self.dag
+            .nodes
+            .iter()
+            .map(node_to_dot_node)
+            .collect::<Vec<_>>();
+        if let Some(root) = self.root.as_ref() {
+            nodes.push(root.clone());
+        }
+        nodes.into()
     }
 
     fn edges(&'a self) -> dot2::Edges<'a, Self::Edge> {
-        let mut edges: Vec<Edge<T>> = vec![];
-        for node in self.dag.nodes.values() {
-            edges.extend(get_edges(&self.dag, node));
+        let mut edges: Vec<Edge<T::Resource>> = vec![];
+        if let Some(root) = self.root.as_ref() {
+            edges.extend(get_edges(&self.dag, root.results.clone()));
+        }
+        for node in self.dag.nodes.iter() {
+            edges.extend(get_edges(&self.dag, node.results.clone()));
         }
         edges.into()
     }
 
     fn source(&'a self, edge: &Self::Edge) -> Self::Node {
-        self.dag.get_node_that_results_in(&edge.rez).unwrap().clone()
+        self.dag
+            .get_node_that_results_in(edge.rez)
+            .map(node_to_dot_node)
+            .or(self.root.clone())
+            .unwrap()
     }
 
     fn target(&'a self, edge: &Self::Edge) -> Self::Node {
-        self.dag.nodes.get(&edge.node).unwrap().clone()
+        self.dag.get_node(&edge.node).map(node_to_dot_node).unwrap()
     }
 
     fn subgraphs(&'a self) -> dot2::Subgraphs<'a, Self::Subgraph> {
-        let schedule = self.dag.build_schedule().unwrap();
-        schedule
+        self.schedule
             .batches
             .iter()
             .enumerate()
@@ -168,7 +282,6 @@ impl<'a, T: Copy + PartialEq + Eq + std::hash::Hash> dot2::GraphWalk<'a> for &'a
     }
 
     fn subgraph_nodes(&'a self, batch_index: &Self::Subgraph) -> dot2::Nodes<'a, Self::Node> {
-        let schedule = self.dag.build_schedule().unwrap();
-        schedule.batches.get(*batch_index).unwrap().clone().into()
+        self.schedule.batches[*batch_index].as_slice().into()
     }
 }
