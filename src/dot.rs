@@ -1,7 +1,5 @@
 //! Support for serializing [`Dag`](super::Dag) as a dot file, for use with
 //! graphiz.
-use std::marker::PhantomData;
-
 use super::*;
 
 #[derive(Debug, Snafu)]
@@ -16,19 +14,16 @@ pub enum DotError {
 const GHOST_ROOT_NAME: &str = r#"required_resources"#;
 
 /// A `Dag` and some labels for providing user-facing names for resources.
-pub struct DagLegend<T: NodeType> {
-    pub resources: FxHashMap<T::Resource, String>,
+pub struct DagLegend<E> {
+    pub resources: FxHashMap<E, String>,
     pub name: String,
-    pub dag: Dag<DotNode<T::Resource>>,
-    pub schedule: Schedule<Node<DotNode<T::Resource>>>,
-    pub root: Option<Node<DotNode<T::Resource>>>,
+    pub dag: Dag<(), E>,
+    pub schedule: Schedule<Node<(), E>>,
+    pub root: Option<Node<(), E>>,
 }
 
-impl<T> DagLegend<T>
-where
-    T: NodeType,
-{
-    pub fn new(dag: &Dag<T>) -> Self {
+impl<E: Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
+    pub fn new<N>(dag: &Dag<N, E>) -> Self {
         let mut new_dag = Dag::default();
         new_dag.add_nodes(dag.nodes().map(node_to_dot_node));
         let schedule = new_dag.clone().build_schedule().unwrap();
@@ -37,9 +32,7 @@ where
             None
         } else {
             Some({
-                let mut node = Node::new(DotNode {
-                    _phantom: PhantomData,
-                })
+                let mut node = Node::new(())
                 .with_results(missing_inputs.into_iter());
                 node.name = GHOST_ROOT_NAME.to_string();
                 node
@@ -50,7 +43,7 @@ where
             name: String::new(),
             dag: new_dag,
             schedule,
-            root
+            root,
         }
     }
 
@@ -59,7 +52,7 @@ where
         self
     }
 
-    pub fn with_resource(mut self, name: impl Into<String>, resource: T::Resource) -> Self {
+    pub fn with_resource(mut self, name: impl Into<String>, resource: E) -> Self {
         self.resources.insert(resource, name.into());
         self
     }
@@ -69,28 +62,15 @@ where
     }
 }
 
-pub fn save_as_dot<T: NodeType>(
-    legend: &DagLegend<T>,
+pub fn save_as_dot<E: Copy + PartialEq + Eq + std::hash::Hash>(
+    legend: &DagLegend<E>,
     path: impl AsRef<std::path::Path>,
 ) -> Result<(), DotError> {
     let mut file = std::fs::File::create(path).context(CreateFileSnafu)?;
     dot2::render(legend, &mut file).context(DotSnafu)
 }
 
-#[derive(Clone)]
-pub struct DotNode<R> {
-    _phantom: PhantomData<R>,
-}
-
-impl<R: Copy + Eq + std::hash::Hash> NodeType for DotNode<R> {
-    type Resource = R;
-
-    fn name(&self) -> String {
-        String::new()
-    }
-}
-
-fn node_to_dot_node<T: NodeType>(node: &Node<T>) -> Node<DotNode<T::Resource>> {
+fn node_to_dot_node<T, E: Clone>(node: &Node<T, E>) -> Node<(), E> {
     let Node {
         name,
         barrier,
@@ -103,9 +83,7 @@ fn node_to_dot_node<T: NodeType>(node: &Node<T>) -> Node<DotNode<T::Resource>> {
         ..
     } = node;
     Node {
-        inner: DotNode {
-            _phantom: PhantomData,
-        },
+        node: (),
         name: name.clone(),
         barrier: barrier.clone(),
         moves: moves.clone(),
@@ -123,10 +101,10 @@ pub struct Edge<T> {
     node: String,
 }
 
-impl<'a, T: NodeType> dot2::Labeller<'a> for DagLegend<T> {
-    type Node = Node<DotNode<T::Resource>>;
+impl<'a, E: Copy + PartialEq + Eq + std::hash::Hash> dot2::Labeller<'a> for DagLegend<E> {
+    type Node = Node<(), E>;
 
-    type Edge = Edge<T::Resource>;
+    type Edge = Edge<E>;
 
     type Subgraph = usize;
 
@@ -216,7 +194,7 @@ impl<'a, T: NodeType> dot2::Labeller<'a> for DagLegend<T> {
     }
 }
 
-fn get_edges<T: NodeType>(dag: &Dag<T>, results: impl IntoIterator<Item = T::Resource>) -> Vec<Edge<T::Resource>> {
+fn get_edges<T, E: Copy + PartialEq + Eq + std::hash::Hash>(dag: &Dag<T, E>, results: impl IntoIterator<Item = E>) -> Vec<Edge<E>> {
     let mut edges = vec![];
     for result in results.into_iter() {
         for downstream_node in dag.get_nodes_with_input(result) {
@@ -229,15 +207,16 @@ fn get_edges<T: NodeType>(dag: &Dag<T>, results: impl IntoIterator<Item = T::Res
     edges
 }
 
-impl<'a, T: NodeType> dot2::GraphWalk<'a> for DagLegend<T> {
-    type Node = Node<DotNode<T::Resource>>;
+impl<'a, E: Copy + PartialEq + Eq + std::hash::Hash> dot2::GraphWalk<'a> for DagLegend<E> {
+    type Node = Node<(), E>;
 
-    type Edge = Edge<T::Resource>;
+    type Edge = Edge<E>;
 
     type Subgraph = usize;
 
     fn nodes(&'a self) -> dot2::Nodes<'a, Self::Node> {
-        let mut nodes = self.dag
+        let mut nodes = self
+            .dag
             .nodes
             .iter()
             .map(node_to_dot_node)
@@ -249,7 +228,7 @@ impl<'a, T: NodeType> dot2::GraphWalk<'a> for DagLegend<T> {
     }
 
     fn edges(&'a self) -> dot2::Edges<'a, Self::Edge> {
-        let mut edges: Vec<Edge<T::Resource>> = vec![];
+        let mut edges: Vec<Edge<E>> = vec![];
         if let Some(root) = self.root.as_ref() {
             edges.extend(get_edges(&self.dag, root.results.clone()));
         }

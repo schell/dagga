@@ -180,7 +180,7 @@ fn reduce_ac3(
 }
 
 impl Solver {
-    fn new<T: NodeType>(dag: &Dag<T>) -> Result<Self, DaggaError> {
+    fn new<T, E: Copy + PartialEq + Eq + std::hash::Hash>(dag: &Dag<T, E>) -> Result<Self, DaggaError> {
         let mut solver = Solver::default();
         solver.constraints = dag.all_constraints()?;
 
@@ -256,34 +256,31 @@ pub enum RequirementReason {
     Input,
 }
 
-pub trait NodeType {
-    type Resource: Copy + PartialEq + Eq + std::hash::Hash;
-
-    fn name(&self) -> String;
-}
-
 /// A named node in a graph.
 ///
-/// The type `T` represents the type used to track resources in the graph,
-/// usually `usize` or `&'static str`.
+/// The type `N` represents the type of nodes in the graph. These are what will
+/// be scheduled.
+///
+/// The type `E` represents the type used to track resources. These are the
+/// edges of the graph, usually `usize`, `&'static str` or [`std::any::TypeId`].
 #[derive(Debug, Clone)]
-pub struct Node<T: NodeType> {
-    inner: T,
+pub struct Node<N, E> {
+    node: N,
     name: String,
     barrier: usize,
-    moves: FxHashSet<T::Resource>,
-    reads: FxHashSet<T::Resource>,
-    writes: FxHashSet<T::Resource>,
-    results: FxHashSet<T::Resource>,
+    moves: FxHashSet<E>,
+    reads: FxHashSet<E>,
+    writes: FxHashSet<E>,
+    results: FxHashSet<E>,
     run_before: FxHashSet<String>,
     run_after: FxHashSet<String>,
 }
 
-impl<T: NodeType> Node<T> {
-    pub fn new(inner: T) -> Self {
+impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Node<N, E> {
+    pub fn new(inner: N) -> Self {
         Self {
-            name: inner.name(),
-            inner,
+            node: inner,
+            name: String::new(),
             barrier: Default::default(),
             moves: Default::default(),
             reads: Default::default(),
@@ -298,42 +295,47 @@ impl<T: NodeType> Node<T> {
         &self.name
     }
 
-    pub fn with_move(mut self, rez: T::Resource) -> Self {
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    pub fn with_move(mut self, rez: E) -> Self {
         self.moves.insert(rez);
         self
     }
 
-    pub fn with_moves(mut self, moves: impl Iterator<Item = T::Resource>) -> Self {
+    pub fn with_moves(mut self, moves: impl Iterator<Item = E>) -> Self {
         self.moves.extend(moves);
         self
     }
 
-    pub fn with_read(mut self, rez: T::Resource) -> Self {
+    pub fn with_read(mut self, rez: E) -> Self {
         self.reads.insert(rez);
         self
     }
 
-    pub fn with_reads(mut self, reads: impl IntoIterator<Item = T::Resource>) -> Self {
+    pub fn with_reads(mut self, reads: impl IntoIterator<Item = E>) -> Self {
         self.reads.extend(reads);
         self
     }
 
-    pub fn with_write(mut self, rez: T::Resource) -> Self {
+    pub fn with_write(mut self, rez: E) -> Self {
         self.writes.insert(rez);
         self
     }
 
-    pub fn with_writes(mut self, writes: impl IntoIterator<Item = T::Resource>) -> Self {
+    pub fn with_writes(mut self, writes: impl IntoIterator<Item = E>) -> Self {
         self.writes.extend(writes);
         self
     }
 
-    pub fn with_result(mut self, rez: T::Resource) -> Self {
+    pub fn with_result(mut self, rez: E) -> Self {
         self.results.insert(rez);
         self
     }
 
-    pub fn with_results(mut self, results: impl IntoIterator<Item = T::Resource>) -> Self {
+    pub fn with_results(mut self, results: impl IntoIterator<Item = E>) -> Self {
         self.results.extend(results);
         self
     }
@@ -356,7 +358,7 @@ impl<T: NodeType> Node<T> {
         self
     }
 
-    pub fn all_inputs(&self) -> FxHashSet<T::Resource> {
+    pub fn all_inputs(&self) -> FxHashSet<E> {
         let mut all = self.moves.clone();
         all.extend(self.reads.clone());
         all.extend(self.writes.clone());
@@ -364,7 +366,7 @@ impl<T: NodeType> Node<T> {
     }
 
     /// Compare two nodes to determine the constraints between them.
-    pub fn constraints(&self, other: &Node<T>) -> Result<Vec<Constraint>, DaggaError> {
+    pub fn constraints(&self, other: &Node<N, E>) -> Result<Vec<Constraint>, DaggaError> {
         let mut cs = FxHashMap::<Op, Vec<RequirementReason>>::default();
         if self.run_before.contains(&other.name) || other.run_after.contains(&self.name) {
             cs.insert(Op::Lt, vec![RequirementReason::ExplicitOrder]);
@@ -443,25 +445,29 @@ impl<T: NodeType> Node<T> {
             .collect())
     }
 
-    pub fn into_inner(self) -> T {
-        self.inner
+    pub fn into_inner(self) -> N {
+        self.node
     }
 }
 
 /// A directed acyclic graph.
 ///
-/// `T` is the type used to track resources within the graph.
+/// The type `N` represents the type of nodes in the graph. These are what will
+/// be scheduled.
+///
+/// The type `E` represents the type used to track resources. These are the
+/// edges of the graph, usually `usize`, `&'static str` or [`std::any::TypeId`].
 #[derive(Clone)]
-pub struct Dag<T: NodeType> {
+pub struct Dag<N, E> {
     barrier: usize,
     requires_root_nodes: bool,
-    nodes: Vec<Node<T>>,
+    nodes: Vec<Node<N, E>>,
 }
 
-impl<T> std::fmt::Debug for Dag<T>
+impl<N, E> std::fmt::Debug for Dag<N, E>
 where
-    T: NodeType + std::fmt::Debug,
-    T::Resource: std::fmt::Debug,
+    N: std::fmt::Debug,
+    E: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Dag")
@@ -471,7 +477,7 @@ where
     }
 }
 
-impl<T: NodeType> Default for Dag<T> {
+impl<T, E> Default for Dag<T, E> {
     fn default() -> Self {
         Self {
             barrier: Default::default(),
@@ -481,29 +487,29 @@ impl<T: NodeType> Default for Dag<T> {
     }
 }
 
-impl<T: NodeType> Dag<T> {
+impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Dag<N, E> {
     /// Returns the number of nodes in the DAG.
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
     /// Add a node.
-    pub fn with_node(mut self, node: Node<T>) -> Self {
+    pub fn with_node(mut self, node: Node<N, E>) -> Self {
         self.add_node(node);
         self
     }
 
     /// Add a node.
-    pub fn add_node(&mut self, mut node: Node<T>) {
+    pub fn add_node(&mut self, mut node: Node<N, E>) {
         node.barrier = self.barrier;
         self.nodes.push(node);
     }
 
-    pub fn add_nodes(&mut self, nodes: impl IntoIterator<Item = Node<T>>) {
+    pub fn add_nodes(&mut self, nodes: impl IntoIterator<Item = Node<N, E>>) {
         self.nodes.extend(nodes);
     }
 
-    pub fn nodes(&self) -> impl Iterator<Item = &Node<T>> {
+    pub fn nodes(&self) -> impl Iterator<Item = &Node<N, E>> {
         self.nodes.iter()
     }
 
@@ -525,7 +531,7 @@ impl<T: NodeType> Dag<T> {
         self
     }
 
-    fn get_nodes_with_input(&self, result: T::Resource) -> impl Iterator<Item = &Node<T>> + '_ {
+    fn get_nodes_with_input(&self, result: E) -> impl Iterator<Item = &Node<N, E>> + '_ {
         let result = result.clone();
         self.nodes
             .iter()
@@ -534,7 +540,7 @@ impl<T: NodeType> Dag<T> {
 
     fn traverse_graph_from(
         &self,
-        node: &Node<T>,
+        node: &Node<N, E>,
         mut visited: Vec<String>,
     ) -> Result<(), DaggaError> {
         if visited.contains(&node.name) {
@@ -555,7 +561,7 @@ impl<T: NodeType> Dag<T> {
         Ok(())
     }
 
-    pub fn root_nodes(&self) -> impl Iterator<Item = &Node<T>> + '_ {
+    pub fn root_nodes(&self) -> impl Iterator<Item = &Node<N, E>> + '_ {
         self.nodes.iter().filter(|node| {
             node.moves.is_empty()
                 && node.reads.is_empty()
@@ -594,13 +600,13 @@ impl<T: NodeType> Dag<T> {
     }
 
     /// Build the schedule from the current collection of nodes, if possible.
-    pub fn build_schedule(mut self) -> Result<Schedule<Node<T>>, DaggaError> {
+    pub fn build_schedule(mut self) -> Result<Schedule<Node<N, E>>, DaggaError> {
         self.detect_cycles()?;
 
         let mut solver = Solver::new(&self)?;
         solver.solve()?;
 
-        let mut batches: Vec<Vec<Node<T>>> = Vec::new();
+        let mut batches: Vec<Vec<Node<N, E>>> = Vec::new();
         batches.resize_with(self.nodes.len(), || vec![]);
 
         for (node_name, domain) in solver.domains.into_iter() {
@@ -625,7 +631,7 @@ impl<T: NodeType> Dag<T> {
         Ok(Schedule { batches })
     }
 
-    pub fn get_node_that_results_in(&self, result: T::Resource) -> Option<&Node<T>> {
+    pub fn get_node_that_results_in(&self, result: E) -> Option<&Node<N, E>> {
         self.nodes
             .iter()
             .find(|node| node.results.contains(&result))
@@ -636,7 +642,7 @@ impl<T: NodeType> Dag<T> {
     /// This function will return the inputs to nodes that are not created as
     /// the result of any node in the graph. These are inputs that would need
     /// to be created before the graph could be successfully run.
-    pub fn get_missing_inputs(&self) -> FxHashSet<T::Resource> {
+    pub fn get_missing_inputs(&self) -> FxHashSet<E> {
         let mut all_inputs = FxHashSet::default();
         let mut all_results = FxHashSet::default();
         for node in self.nodes.iter() {
@@ -647,7 +653,7 @@ impl<T: NodeType> Dag<T> {
         all_inputs.difference(&all_results).copied().collect()
     }
 
-    pub fn get_node(&self, name: impl AsRef<str>) -> Option<&Node<T>> {
+    pub fn get_node(&self, name: impl AsRef<str>) -> Option<&Node<N, E>> {
         let name = name.as_ref();
         self.nodes.iter().find(|node| node.name == name)
     }
@@ -660,7 +666,7 @@ pub struct Schedule<T> {
     pub batches: Vec<Vec<T>>,
 }
 
-impl<T: NodeType> Schedule<Node<T>> {
+impl<N, E> Schedule<Node<N, E>> {
     pub fn batched_names(&self) -> Vec<Vec<&str>> {
         self.batches
             .iter()
@@ -689,16 +695,8 @@ mod tests {
 
     use super::*;
 
-    impl NodeType for &'static str {
-        type Resource = usize;
-
-        fn name(&self) -> String {
-            self.to_string()
-        }
-    }
-
-    fn dag_schedule<T: NodeType>(dag: Dag<T>) -> Vec<String> {
-        let schedule: Schedule<Node<T>> = dag.build_schedule().unwrap();
+    fn dag_schedule<T, E: Copy + PartialEq + Eq + std::hash::Hash>(dag: Dag<T, E>) -> Vec<String> {
+        let schedule: Schedule<Node<T, E>> = dag.build_schedule().unwrap();
         schedule
             .batched_names()
             .iter()
@@ -710,7 +708,7 @@ mod tests {
         vs.iter().map(|s| s.as_str()).collect::<Vec<_>>()
     }
 
-    fn assert_batches<T: NodeType>(expected: &[&str], dag: Dag<T>) {
+    fn assert_batches<T, E: Copy + PartialEq + Eq + std::hash::Hash>(expected: &[&str], dag: Dag<T, E>) {
         let batches = dag_schedule(dag);
         assert_eq!(expected, as_strs(&batches).as_slice());
     }
@@ -724,11 +722,11 @@ mod tests {
         let [a, b, c, d]: [usize; 4] = [0, 1, 2, 3];
 
         // This node results in the creation of an `a`.
-        let create_a = Node::new("create-a").with_result(a);
+        let create_a = Node::new(()).with_name("create-a").with_result(a);
         // This node creates `b`
-        let create_b = Node::new("create-b").with_result(b);
+        let create_b = Node::new(()).with_name("create-b").with_result(b);
         // This node reads `a` and `b` and results in `c`
-        let create_c = Node::new("create-c")
+        let create_c = Node::new(()).with_name("create-c")
             .with_read(a)
             .with_read(b)
             .with_result(c);
@@ -736,13 +734,13 @@ mod tests {
         // expressed here (just as an example), it must be run before
         // "create-c". There is no result of this node beside the side-effect of
         // modifying `a`.
-        let modify_a = Node::new("modify-a")
+        let modify_a = Node::new(()).with_name("modify-a")
             .with_write(a)
             .with_read(b)
             .run_before("create-c");
         assert!(modify_a.run_before.contains("create-c"));
         // This node consumes `a`, `b`, `c` and results in `d`.
-        let reduce_abc_to_d = Node::new("reduce-abc-to-d")
+        let reduce_abc_to_d = Node::new(()).with_name("reduce-abc-to-d")
             .with_move(a)
             .with_move(b)
             .with_move(c)
@@ -751,7 +749,7 @@ mod tests {
         // Add the nodes with their dependencies and build the schedule.
         // The order they are added should not matter (it may cause differences in
         // scheduling, but always result in a valid schedule).
-        let mut dag = Dag::default();
+        let mut dag = Dag::<(), usize>::default();
 
         dag.add_node(create_a);
         assert_batches(&["create-a"], dag.clone());
@@ -787,9 +785,9 @@ mod tests {
     fn detect_cycle() {
         let [a, b, c] = [0, 1, 2usize];
         let schedule = Dag::default()
-            .with_node(Node::new("a").with_result(a))
-            .with_node(Node::new("b").with_read(a).with_read(c).with_result(b))
-            .with_node(Node::new("c").with_read(b).with_result(c))
+            .with_node(Node::new(()).with_name("a").with_result(a))
+            .with_node(Node::new(()).with_name("b").with_read(a).with_read(c).with_result(b))
+            .with_node(Node::new(()).with_name("c").with_read(b).with_result(c))
             .build_schedule()
             .unwrap();
         println!("{:?}", schedule.batched_names());
@@ -810,14 +808,14 @@ mod tests {
     fn without_results() {
         let [a, b, c] = [0, 1, 2usize];
         let mut dag = Dag::default()
-            .with_node(Node::new("run").with_read(a))
-            .with_node(Node::new("jog").with_write(b).with_move(c));
+            .with_node(Node::new(()).with_name("run").with_read(a))
+            .with_node(Node::new(()).with_name("jog").with_write(b).with_move(c));
         assert_eq!(
             vec![a, b, c],
             dag.get_missing_inputs().into_iter().collect::<Vec<_>>()
         );
 
-        let legend = DagLegend::new(&dag)
+        let _legend = DagLegend::new(&dag)
             .with_name("blah")
             .with_resource("A1", a)
             .with_resource("B2", b)
@@ -826,7 +824,7 @@ mod tests {
             .unwrap();
 
         let missing_inputs = dag.get_missing_inputs();
-        let root = Node::new("root").with_results(missing_inputs);
+        let root = Node::new(()).with_name("root").with_results(missing_inputs);
         dag.add_node(root);
         let batches = dag_schedule(dag.clone());
         assert_eq!(["root", "jog, run"], as_strs(&batches).as_slice());
