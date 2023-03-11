@@ -22,77 +22,62 @@ A crate for scheduling directed acyclic graphs.
 ```rust
 use dagga::*;
 
-let mut dag = Dag::default();
-
-// Create names for our resources.
+// Create names/values for our resources.
 //
-// These represent the types of the resources that get created, read, modified and
-// consumed by each node.
+// These represent the types of the resources that get created, passed through
+// and consumed by each node.
 let [a, b, c, d]: [usize; 4] = [0, 1, 2, 3];
 
 // Add the nodes with their dependencies and build the schedule.
-let schedule = dag
-    .with_node(
+// The order they are added should not matter (it may cause differences in
+// scheduling, but always result in a valid schedule).
+let dag = Dag::<(), usize>::default()
+    .with_node({
         // This node results in the creation of an `a`.
-        Node::default()
-            .with_name("create-a")
-            .with_result(a)
-    )
-    .with_node(
+        Node::new(()).with_name("create-a").with_result(a)
+    })
+    .with_node({
+        // This node creates a `b`.
+        Node::new(()).with_name("create-b").with_result(b)
+    })
+    .with_node({
+        // This node reads `a` and `b` and results in `c`
+        Node::new(())
+            .with_name("create-c")
+            .with_read(a)
+            .with_read(b)
+            .with_result(c)
+    })
+    .with_node({
+        // This node modifies `a`, but for reasons outside of the scope of the types
+        // expressed here (just as an example), it must be run before
+        // "create-c". There is no result of this node beside the side-effect of
+        // modifying `a`.
+        Node::new(())
+            .with_name("modify-a")
+            .with_write(a)
+            .with_read(b)
+            .run_before("create-c")
+    })
+    .with_node({
         // This node consumes `a`, `b`, `c` and results in `d`.
-        Node::default()
+        Node::new(())
             .with_name("reduce-abc-to-d")
             .with_move(a)
             .with_move(b)
             .with_move(c)
             .with_result(d)
-    )
-    .with_node(
-        // This node reads `a` and `b` and results in `c`
-        Node::default()
-            .with_name("create-c")
-            .with_read(a)
-            .with_read(b)
-            .with_result(c)
-    )
-    .with_node(
-        // This node modifies `a`, but for reasons outside of the scope of the types expressed here
-        // (just as an example), it must be run before "create-c". There is no result of this node
-        // beside the side-effect of modifying `a`.
-        Node::default()
-            .with_name("modify-a")
-            .with_write(a)
-            .with_read(b)
-            .run_before("create-c")
-    )
-    .with_node(
-        // This node creates `b`
-        Node::default()
-            .with_name("create-b")
-            .with_result(b)
-    )
-    .build_schedule()
-    .unwrap();
+    });
 
-let batches = schedule
-    .batches()
-    .map(|batch| {
-        batch
-            .into_iter()
-            .flat_map(|node| node.name())
-            .collect::Vec<_>().join(", ")
-    })
-    .collect::<Vec<_>>();
-let batches_str = batches.iter().map(|s| s.as_str()).collect::<Vec<_>>();
-
-assert_eq!(
-    [
-        "create-a, create-b", // each batch can be run in parallel w/o violating exclusive borrows
+dagga::assert_batches(
+    &[
+        "create-a, create-b", /* each batch can be run in parallel w/o violating
+                                * exclusive borrows */
         "modify-a",
         "create-c",
-        "reduce-abc-to-d"
+        "reduce-abc-to-d",
     ],
-    batches_str.as_slice()
+    dag.clone(),
 );
 ```
 

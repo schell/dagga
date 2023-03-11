@@ -707,32 +707,41 @@ impl<T> Schedule<T> {
     }
 }
 
+fn dag_schedule<T, E: Copy + PartialEq + Eq + std::hash::Hash>(dag: Dag<T, E>) -> Vec<String> {
+    let schedule: Schedule<Node<T, E>> = dag.build_schedule().unwrap();
+    schedule
+        .batched_names()
+        .iter()
+        .map(|names| names.join(", "))
+        .collect::<Vec<_>>()
+}
+
+fn as_strs(vs: &Vec<String>) -> Vec<&str> {
+    vs.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+}
+
+/// Assert the scheduled batches of a `Dag`.
+///
+/// This is used solely for testing.
+pub fn assert_batches<T, E: Copy + PartialEq + Eq + std::hash::Hash>(
+    expected: &[&str],
+    dag: Dag<T, E>,
+) {
+    let batches = dag_schedule(dag);
+    assert_eq!(expected, as_strs(&batches).as_slice());
+}
+
+#[cfg(doctest)]
+pub mod doctest {
+    #[doc = include_str!("../README.md")]
+    pub struct ReadmeDoctests;
+}
+
 #[cfg(test)]
 mod tests {
     use crate::dot::{save_as_dot, DagLegend};
 
     use super::*;
-
-    fn dag_schedule<T, E: Copy + PartialEq + Eq + std::hash::Hash>(dag: Dag<T, E>) -> Vec<String> {
-        let schedule: Schedule<Node<T, E>> = dag.build_schedule().unwrap();
-        schedule
-            .batched_names()
-            .iter()
-            .map(|names| names.join(", "))
-            .collect::<Vec<_>>()
-    }
-
-    fn as_strs(vs: &Vec<String>) -> Vec<&str> {
-        vs.iter().map(|s| s.as_str()).collect::<Vec<_>>()
-    }
-
-    fn assert_batches<T, E: Copy + PartialEq + Eq + std::hash::Hash>(
-        expected: &[&str],
-        dag: Dag<T, E>,
-    ) {
-        let batches = dag_schedule(dag);
-        assert_eq!(expected, as_strs(&batches).as_slice());
-    }
 
     #[test]
     fn sanity() {
@@ -802,6 +811,10 @@ mod tests {
             .with_resource("B", b)
             .with_resource("C", c);
         save_as_dot(&legend, "example.dot").unwrap();
+    }
+
+    #[test]
+    fn sanity_alt() {
     }
 
     #[test]

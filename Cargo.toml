@@ -2,6 +2,13 @@
 name = "dagga"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+keywords = ["dag", "schedule", "solver"]
+readme = "README.md"
+documentation = "https://docs.rs/dagga"
+repository = "https://github.com/schell/dagga"
+categories = ["algorithms"]
+description = "For scheduling directed acyclic graphs of nodes that create, read, write and consume resources."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
