@@ -180,16 +180,16 @@ fn reduce_ac3(
 }
 
 impl Solver {
-    fn new<T, E: Copy + PartialEq + Eq + std::hash::Hash>(dag: &Dag<T, E>) -> Result<Self, DaggaError> {
+    fn new<T, E: Copy + PartialEq + Eq + std::hash::Hash>(
+        dag: &Dag<T, E>,
+    ) -> Result<Self, DaggaError> {
         let mut solver = Solver::default();
         solver.constraints = dag.all_constraints()?;
 
         let size = dag.len();
         let domain = Domain((0..size).into_iter().collect());
         for node in dag.nodes() {
-            solver
-                .domains
-                .insert(node.name.clone(), domain.clone());
+            solver.domains.insert(node.name.clone(), domain.clone());
         }
 
         Ok(solver)
@@ -301,6 +301,10 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Node<N, E> {
 
     pub fn inner_mut(&mut self) -> &mut N {
         &mut self.node
+    }
+
+    pub fn set_barrier(&mut self, barrier: usize) {
+        self.barrier = barrier;
     }
 
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
@@ -509,12 +513,16 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Dag<N, E> {
 
     /// Add a node.
     pub fn add_node(&mut self, mut node: Node<N, E>) {
-        node.barrier = self.barrier;
+        if node.barrier == 0 {
+            node.barrier = self.barrier;
+        }
         self.nodes.push(node);
     }
 
     pub fn add_nodes(&mut self, nodes: impl IntoIterator<Item = Node<N, E>>) {
-        self.nodes.extend(nodes);
+        for node in nodes {
+            self.add_node(node);
+        }
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = &Node<N, E>> {
@@ -693,7 +701,9 @@ impl<T> Schedule<T> {
             }
             new_batches.push(new_batch);
         }
-        Schedule {batches: new_batches}
+        Schedule {
+            batches: new_batches,
+        }
     }
 }
 
@@ -716,7 +726,10 @@ mod tests {
         vs.iter().map(|s| s.as_str()).collect::<Vec<_>>()
     }
 
-    fn assert_batches<T, E: Copy + PartialEq + Eq + std::hash::Hash>(expected: &[&str], dag: Dag<T, E>) {
+    fn assert_batches<T, E: Copy + PartialEq + Eq + std::hash::Hash>(
+        expected: &[&str],
+        dag: Dag<T, E>,
+    ) {
         let batches = dag_schedule(dag);
         assert_eq!(expected, as_strs(&batches).as_slice());
     }
@@ -734,7 +747,8 @@ mod tests {
         // This node creates `b`
         let create_b = Node::new(()).with_name("create-b").with_result(b);
         // This node reads `a` and `b` and results in `c`
-        let create_c = Node::new(()).with_name("create-c")
+        let create_c = Node::new(())
+            .with_name("create-c")
             .with_read(a)
             .with_read(b)
             .with_result(c);
@@ -742,13 +756,15 @@ mod tests {
         // expressed here (just as an example), it must be run before
         // "create-c". There is no result of this node beside the side-effect of
         // modifying `a`.
-        let modify_a = Node::new(()).with_name("modify-a")
+        let modify_a = Node::new(())
+            .with_name("modify-a")
             .with_write(a)
             .with_read(b)
             .run_before("create-c");
         assert!(modify_a.run_before.contains("create-c"));
         // This node consumes `a`, `b`, `c` and results in `d`.
-        let reduce_abc_to_d = Node::new(()).with_name("reduce-abc-to-d")
+        let reduce_abc_to_d = Node::new(())
+            .with_name("reduce-abc-to-d")
             .with_move(a)
             .with_move(b)
             .with_move(c)
@@ -794,7 +810,13 @@ mod tests {
         let [a, b, c] = [0, 1, 2usize];
         let schedule = Dag::default()
             .with_node(Node::new(()).with_name("a").with_result(a))
-            .with_node(Node::new(()).with_name("b").with_read(a).with_read(c).with_result(b))
+            .with_node(
+                Node::new(())
+                    .with_name("b")
+                    .with_read(a)
+                    .with_read(c)
+                    .with_result(b),
+            )
             .with_node(Node::new(()).with_name("c").with_read(b).with_result(c))
             .build_schedule()
             .unwrap();
@@ -836,5 +858,21 @@ mod tests {
         dag.add_node(root);
         let batches = dag_schedule(dag.clone());
         assert_eq!(["root", "jog, run"], as_strs(&batches).as_slice());
+    }
+
+    #[test]
+    fn explicit_barrier() {
+        // tests that dags with nodes with explicit barriers set will respect those nodes'
+        // barrier constraints
+        let dag = Dag::<(), &'static str>::default()
+            .with_node(Node::new(()).with_name("one").run_before("two"))
+            .with_node(Node::new(()).with_name("two").run_after("one"))
+            .with_node(Node::new(()).with_name("run_thrice_and_leave"))
+            .with_node({
+                let mut node = Node::new(()).with_name("lastly");
+                node.set_barrier(1);
+                node
+            });
+        assert_batches(&["one, run_thrice_and_leave", "two", "lastly"], dag);
     }
 }
