@@ -299,6 +299,10 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Node<N, E> {
         &self.node
     }
 
+    pub fn inner_mut(&mut self) -> &mut N {
+        &mut self.node
+    }
+
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
