@@ -16,6 +16,7 @@ A crate for scheduling directed acyclic graphs.
 * scheduling parallel operations with dependencies, shared and exclusive resources
 * scheduling steps in a render graph
 * scheduling system batches in ECS
+* scheduling audio nodes in an audio graph
 
 ## Example
 
