@@ -317,7 +317,7 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Node<N, E> {
         self
     }
 
-    pub fn with_moves(mut self, moves: impl Iterator<Item = E>) -> Self {
+    pub fn with_moves(mut self, moves: impl IntoIterator<Item = E>) -> Self {
         self.moves.extend(moves);
         self
     }
