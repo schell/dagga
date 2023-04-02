@@ -1,5 +1,7 @@
 //! Support for serializing [`Dag`](super::Dag) as a dot file, for use with
 //! graphiz.
+use std::any::Any;
+
 use super::*;
 
 #[derive(Debug, Snafu)]
@@ -15,17 +17,27 @@ const GHOST_ROOT_NAME: &str = r#"required_resources"#;
 
 /// A `Dag` and some labels for providing user-facing names for resources.
 pub struct DagLegend<E> {
-    pub resources: FxHashMap<E, String>,
+    pub resource_labels: FxHashMap<E, String>,
+    pub node_ids: FxHashMap<String, usize>,
     pub name: String,
     pub dag: Dag<(), E>,
     pub schedule: Schedule<Node<(), E>>,
     pub root: Option<Node<(), E>>,
 }
 
-impl<E: Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
-    pub fn new<N>(dag: &Dag<N, E>) -> Self {
+impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
+    pub fn new<'a, N: Any>(nodes: impl Iterator<Item = &'a Node<N, E>>) -> Self {
+        let resource_labels = FxHashMap::default();
+        let mut node_ids = FxHashMap::default();
         let mut new_dag = Dag::default();
-        new_dag.add_nodes(dag.nodes().map(node_to_dot_node));
+        let mut next_id = 0;
+        for node in nodes {
+            if !node_ids.contains_key(node.name()) {
+                node_ids.insert(node.name().to_string(), next_id);
+                next_id += 1;
+            }
+            new_dag.add_node(node_to_dot_node(node));
+        }
         let schedule = new_dag.clone().build_schedule().unwrap();
         let missing_inputs = new_dag.get_missing_inputs();
         let root = if missing_inputs.is_empty() {
@@ -39,7 +51,8 @@ impl<E: Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
             })
         };
         DagLegend {
-            resources: Default::default(),
+            resource_labels,
+            node_ids,
             name: String::new(),
             dag: new_dag,
             schedule,
@@ -52,13 +65,34 @@ impl<E: Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
         self
     }
 
-    pub fn with_resource(mut self, name: impl Into<String>, resource: E) -> Self {
-        self.resources.insert(resource, name.into());
+    pub fn with_resources_named(mut self, f: impl Fn(&E) -> String) -> Self {
+        for node in self.dag.nodes() {
+            let resources = node.all_inputs().into_iter().chain(node.results.iter().copied());
+            for resource in resources {
+                if self.resource_labels.contains_key(&resource) {
+                    continue;
+                }
+                let name = f(&resource);
+                self.resource_labels.insert(resource, name);
+            }
+        }
         self
     }
 
     pub fn save_to(self, path: impl AsRef<std::path::Path>) -> Result<(), DotError> {
         save_as_dot(&self, path)
+    }
+}
+
+impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash + std::fmt::Debug> DagLegend<E> {
+    pub fn with_resource_debug_names(self) -> Self {
+        self.with_resources_named(|r| format!("{r:?}"))
+    }
+}
+
+impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash + std::fmt::Display> DagLegend<E> {
+    pub fn with_resource_display_names(self) -> Self {
+        self.with_resources_named(|r| format!("{r}"))
     }
 }
 
@@ -109,16 +143,23 @@ impl<'a, E: Copy + PartialEq + Eq + std::hash::Hash> dot2::Labeller<'a> for DagL
     type Subgraph = usize;
 
     fn graph_id(&'a self) -> dot2::Result<dot2::Id<'a>> {
-        dot2::Id::new(&self.name)
+        if self.name.is_empty() {
+            dot2::Id::new("my_graph")
+        } else {
+            dot2::Id::new(&self.name)
+        }
     }
 
     fn node_id(&'a self, n: &Self::Node) -> dot2::Result<dot2::Id<'a>> {
-        dot2::Id::new(n.name.replace("-", "_").to_string())
+        println!("name: {}", n.name);
+        let id = self.node_ids.get(&n.name).map(|id| format!("node_{id}")).unwrap_or_else(|| "ghost_node".to_string());
+        println!("id:{id}");
+        Ok(dot2::Id::new(id).unwrap())
     }
 
     fn edge_label(&'a self, e: &Self::Edge) -> dot2::label::Text<'a> {
         dot2::label::Text::LabelStr(
-            self.resources
+            self.resource_labels
                 .get(&e.rez)
                 .map(|s| s.to_string())
                 .unwrap_or_default()
@@ -146,6 +187,10 @@ impl<'a, E: Copy + PartialEq + Eq + std::hash::Hash> dot2::Labeller<'a> for DagL
 
     fn subgraph_label(&'a self, batch_index: &Self::Subgraph) -> dot2::label::Text<'a> {
         dot2::label::Text::LabelStr(format!("batch_{batch_index}").into())
+    }
+
+    fn node_label(&'a self, n: &Self::Node) -> dot2::Result<dot2::label::Text<'a>> {
+        Ok(dot2::label::Text::LabelStr(n.name.clone().into()))
     }
 
     fn node_shape(&'a self, _node: &Self::Node) -> Option<dot2::label::Text<'a>> {

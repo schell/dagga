@@ -5,6 +5,21 @@ use snafu::prelude::*;
 #[cfg(feature = "dot")]
 pub mod dot;
 
+fn collate_dupes(names: &[String]) -> String {
+    let counted = names
+        .iter()
+        .fold(FxHashMap::<&String, usize>::default(), |mut map, name| {
+            let entry = map.entry(name).or_default();
+            *entry += 1;
+            map
+        });
+    counted
+        .into_iter()
+        .map(|(name, count)| format!("{count} {name}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// An error in dag creation or scheduling.
 #[derive(Debug, Snafu)]
 pub enum DaggaError {
@@ -20,6 +35,9 @@ pub enum DaggaError {
     #[snafu(display("Cycle detected in graph of '{start}': {}", path.join(" -> ")))]
     Cycle { start: String, path: Vec<String> },
 
+    #[snafu(display("Duplicate nodes in the graph: {}", collate_dupes(&node_names)))]
+    Duplicates { node_names: Vec<String> },
+
     #[snafu(display("{}", conflict_reason(&reqs)))]
     Conflict { reqs: Vec<Constraint> },
 
@@ -30,8 +48,25 @@ pub enum DaggaError {
     CannotSolve { constraint: Constraint },
 }
 
+/// An error that occurs during schedule building that can give back the erroneous `Dag`.
+#[derive(Snafu)]
+#[snafu(display("Cannot build schedule: {source}"))]
+pub struct BuildScheduleError<T, E> {
+    pub source: DaggaError,
+    pub dag: Dag<T, E>,
+}
+
+impl<T, E> std::fmt::Debug for BuildScheduleError<T, E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BuildScheduleError")
+            .field("source", &self.source)
+            .field("dag", &"_".to_string())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Op {
+pub enum Op {
     Gt,
     Lt,
     Ne,
@@ -39,10 +74,10 @@ enum Op {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Constraint {
-    lhs: String,
-    rhs: String,
-    op: Op,
-    reasons: Vec<RequirementReason>,
+    pub lhs: String,
+    pub rhs: String,
+    pub op: Op,
+    pub reasons: Vec<RequirementReason>,
 }
 
 impl std::fmt::Display for Constraint {
@@ -307,6 +342,35 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Node<N, E> {
         self.barrier = barrier;
     }
 
+    /// Returns the barrier this node will run after.
+    pub fn get_barrier(&self) -> usize {
+        self.barrier
+    }
+
+    pub fn get_runs_after(&self) -> impl Iterator<Item = &String> {
+        self.run_after.iter()
+    }
+
+    pub fn get_runs_before(&self) -> impl Iterator<Item = &String> {
+        self.run_before.iter()
+    }
+
+    pub fn get_reads(&self) -> impl Iterator<Item = &E> {
+        self.reads.iter()
+    }
+
+    pub fn get_writes(&self) -> impl Iterator<Item = &E> {
+        self.writes.iter()
+    }
+
+    pub fn get_moves(&self) -> impl Iterator<Item = &E> {
+        self.moves.iter()
+    }
+
+    pub fn get_results(&self) -> impl Iterator<Item = &E> {
+        self.results.iter()
+    }
+
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
@@ -352,6 +416,14 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Node<N, E> {
         self
     }
 
+    /// Explicitly set the barrier of this node.
+    ///
+    /// This specifies that this node should run after this barrier.
+    /// This is a synonym for [`Node::runs_after_barrier`].
+    pub fn with_barrier(self, barrier: usize) -> Self {
+        self.runs_after_barrier(barrier)
+    }
+
     pub fn run_before(mut self, name: impl Into<String>) -> Self {
         self.run_before.insert(name.into());
         self
@@ -365,6 +437,7 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Node<N, E> {
     /// Explicitly set the barrier of this node.
     ///
     /// This specifies that this node should run after this barrier.
+    /// This is a synonym for [`Node::with_barrier`].
     pub fn runs_after_barrier(mut self, barrier: usize) -> Self {
         self.barrier = barrier;
         self
@@ -388,13 +461,11 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Node<N, E> {
 
         if self.barrier != other.barrier {
             let entry = cs
-                .entry(
-                    if self.barrier > other.barrier {
-                        Op::Gt
-                    } else {
-                        Op::Lt
-                    },
-                )
+                .entry(if self.barrier > other.barrier {
+                    Op::Gt
+                } else {
+                    Op::Lt
+                })
                 .or_default();
             entry.push(RequirementReason::Barrier);
         }
@@ -586,6 +657,19 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Dag<N, E> {
         })
     }
 
+    pub fn detect_duplicates(&self) -> Result<(), DaggaError> {
+        let mut names = self.nodes().map(|n| n.name()).collect::<Vec<_>>();
+        while let Some(name) = names.pop() {
+            snafu::ensure!(
+                !names.iter().any(|n| n == &name),
+                DuplicatesSnafu {
+                    node_names: self.nodes().map(|n| n.name.clone()).collect::<Vec<_>>()
+                }
+            );
+        }
+        Ok(())
+    }
+
     pub fn detect_cycles(&self) -> Result<(), DaggaError> {
         let mut has_root_nodes = false;
         for node in self.root_nodes() {
@@ -616,11 +700,24 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Dag<N, E> {
     }
 
     /// Build the schedule from the current collection of nodes, if possible.
-    pub fn build_schedule(mut self) -> Result<Schedule<Node<N, E>>, DaggaError> {
-        self.detect_cycles()?;
+    pub fn build_schedule(mut self) -> Result<Schedule<Node<N, E>>, BuildScheduleError<N, E>> {
+        if let Err(source) = self.detect_duplicates() {
+            return Err(BuildScheduleError { source, dag: self });
+        }
 
-        let mut solver = Solver::new(&self)?;
-        solver.solve()?;
+        if let Err(source) = self.detect_cycles() {
+            return Err(BuildScheduleError { source, dag: self });
+        }
+
+        let mut solver = match Solver::new(&self) {
+            Ok(s) => s,
+            Err(source) => {
+                return Err(BuildScheduleError { source, dag: self });
+            }
+        };
+        if let Err(source) = solver.solve() {
+            return Err(BuildScheduleError { source, dag: self });
+        }
 
         let mut batches: Vec<Vec<Node<N, E>>> = Vec::new();
         batches.resize_with(self.nodes.len(), || vec![]);
@@ -672,6 +769,10 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Dag<N, E> {
     pub fn get_node(&self, name: impl AsRef<str>) -> Option<&Node<N, E>> {
         let name = name.as_ref();
         self.nodes.iter().find(|node| node.name == name)
+    }
+
+    pub fn take_nodes(&mut self) -> Vec<Node<N, E>> {
+        std::mem::take(&mut self.nodes)
     }
 }
 
@@ -805,17 +906,23 @@ mod tests {
             dag.clone(),
         );
 
-        let legend = DagLegend::new(&dag)
+        let legend = DagLegend::new(dag.nodes())
             .with_name("example")
-            .with_resource("A", a)
-            .with_resource("B", b)
-            .with_resource("C", c);
+            .with_resources_named(|rez| {
+                if rez == &a {
+                    "A"
+                } else if rez == &b {
+                    "B"
+                } else {
+                    "C"
+                }
+                .to_string()
+            });
         save_as_dot(&legend, "example.dot").unwrap();
     }
 
     #[test]
-    fn sanity_alt() {
-    }
+    fn sanity_alt() {}
 
     #[test]
     #[should_panic]
@@ -858,11 +965,18 @@ mod tests {
             dag.get_missing_inputs().into_iter().collect::<Vec<_>>()
         );
 
-        let _legend = DagLegend::new(&dag)
+        let _legend = DagLegend::new(dag.nodes())
             .with_name("blah")
-            .with_resource("A1", a)
-            .with_resource("B2", b)
-            .with_resource("C3", c)
+            .with_resources_named(|rez| {
+                if rez == &a {
+                    "A1"
+                } else if rez == &b {
+                    "B2"
+                } else {
+                    "C3"
+                }
+                .to_string()
+            })
             .save_to("blah.dot")
             .unwrap();
 
@@ -875,8 +989,8 @@ mod tests {
 
     #[test]
     fn explicit_barrier() {
-        // tests that dags with nodes with explicit barriers set will respect those nodes'
-        // barrier constraints
+        // tests that dags with nodes with explicit barriers set will respect those
+        // nodes' barrier constraints
         let dag = Dag::<(), &'static str>::default()
             .with_node(Node::new(()).with_name("one").run_before("two"))
             .with_node(Node::new(()).with_name("two").run_after("one"))
