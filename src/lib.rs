@@ -351,8 +351,24 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Node<N, E> {
         self.run_after.iter()
     }
 
+    pub fn add_runs_after(&mut self, name: impl Into<String>) {
+        self.run_after.insert(name.into());
+    }
+
+    pub fn remove_runs_after(&mut self, name: impl Into<String>) {
+        self.run_after.remove(&name.into());
+    }
+
     pub fn get_runs_before(&self) -> impl Iterator<Item = &String> {
         self.run_before.iter()
+    }
+
+    pub fn add_runs_before(&mut self, name: impl Into<String>) {
+        self.run_before.insert(name.into());
+    }
+
+    pub fn remove_runs_before(&mut self, name: impl Into<String>) {
+        self.run_before.remove(&name.into());
     }
 
     pub fn get_reads(&self) -> impl Iterator<Item = &E> {
