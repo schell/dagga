@@ -44,8 +44,7 @@ impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
             None
         } else {
             Some({
-                let mut node = Node::new(())
-                .with_results(missing_inputs.into_iter());
+                let mut node = Node::new(()).with_results(missing_inputs);
                 node.name = GHOST_ROOT_NAME.to_string();
                 node
             })
@@ -67,7 +66,10 @@ impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
 
     pub fn with_resources_named(mut self, f: impl Fn(&E) -> String) -> Self {
         for node in self.dag.nodes() {
-            let resources = node.all_inputs().into_iter().chain(node.results.iter().copied());
+            let resources = node
+                .all_inputs()
+                .into_iter()
+                .chain(node.results.iter().copied());
             for resource in resources {
                 if self.resource_labels.contains_key(&resource) {
                     continue;
@@ -119,7 +121,7 @@ fn node_to_dot_node<T, E: Clone>(node: &Node<T, E>) -> Node<(), E> {
     Node {
         node: (),
         name: name.clone(),
-        barrier: barrier.clone(),
+        barrier: *barrier,
         moves: moves.clone(),
         reads: reads.clone(),
         writes: writes.clone(),
@@ -152,7 +154,11 @@ impl<'a, E: Copy + PartialEq + Eq + std::hash::Hash> dot2::Labeller<'a> for DagL
 
     fn node_id(&'a self, n: &Self::Node) -> dot2::Result<dot2::Id<'a>> {
         println!("name: {}", n.name);
-        let id = self.node_ids.get(&n.name).map(|id| format!("node_{id}")).unwrap_or_else(|| "ghost_node".to_string());
+        let id = self
+            .node_ids
+            .get(&n.name)
+            .map(|id| format!("node_{id}"))
+            .unwrap_or_else(|| "ghost_node".to_string());
         println!("id:{id}");
         Ok(dot2::Id::new(id).unwrap())
     }
@@ -239,7 +245,10 @@ impl<'a, E: Copy + PartialEq + Eq + std::hash::Hash> dot2::Labeller<'a> for DagL
     }
 }
 
-fn get_edges<T, E: Copy + PartialEq + Eq + std::hash::Hash>(dag: &Dag<T, E>, results: impl IntoIterator<Item = E>) -> Vec<Edge<E>> {
+fn get_edges<T, E: Copy + PartialEq + Eq + std::hash::Hash>(
+    dag: &Dag<T, E>,
+    results: impl IntoIterator<Item = E>,
+) -> Vec<Edge<E>> {
     let mut edges = vec![];
     for result in results.into_iter() {
         for downstream_node in dag.get_nodes_with_input(result) {

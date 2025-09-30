@@ -35,10 +35,10 @@ pub enum DaggaError {
     #[snafu(display("Cycle detected in graph of '{start}': {}", path.join(" -> ")))]
     Cycle { start: String, path: Vec<String> },
 
-    #[snafu(display("Duplicate nodes in the graph: {}", collate_dupes(&node_names)))]
+    #[snafu(display("Duplicate nodes in the graph: {}", collate_dupes(node_names)))]
     Duplicates { node_names: Vec<String> },
 
-    #[snafu(display("{}", conflict_reason(&reqs)))]
+    #[snafu(display("{}", conflict_reason(reqs)))]
     Conflict { reqs: Vec<Constraint> },
 
     #[snafu(display(
@@ -142,7 +142,7 @@ fn reduce_ac3(
     constraints: &FxHashMap<String, Vec<Constraint>>,
     domains: &FxHashMap<String, Domain>,
 ) -> Result<Option<FxHashMap<String, Domain>>, DaggaError> {
-    let mut worklist: Vec<&Constraint> = constraints.values().flat_map(|cs| cs).collect();
+    let mut worklist: Vec<&Constraint> = constraints.values().flatten().collect();
     let mut domains = domains.clone();
     let mut domains_changed = false;
     let mut failure: Option<Constraint> = None;
@@ -183,7 +183,7 @@ fn reduce_ac3(
                 // to continue solving
                 let affected = constraints
                     .values()
-                    .flat_map(|cs| cs)
+                    .flatten()
                     .filter(|c| {
                         (c.lhs == constraint.lhs || c.rhs == constraint.lhs)
                             && c.rhs != constraint.rhs
@@ -218,11 +218,13 @@ impl Solver {
     fn new<T, E: Copy + PartialEq + Eq + std::hash::Hash>(
         dag: &Dag<T, E>,
     ) -> Result<Self, DaggaError> {
-        let mut solver = Solver::default();
-        solver.constraints = dag.all_constraints()?;
+        let mut solver = Solver {
+            constraints: dag.all_constraints()?,
+            ..Default::default()
+        };
 
         let size = dag.len();
-        let domain = Domain((0..size).into_iter().collect());
+        let domain = Domain((0..size).collect());
         for node in dag.nodes() {
             solver.domains.insert(node.name.clone(), domain.clone());
         }
@@ -277,7 +279,7 @@ fn mk_req(c: &Constraint) -> String {
 fn conflict_reason(reqs: &[Constraint]) -> String {
     format!(
         "Requirements are mutually exclusive:{}",
-        reqs.into_iter()
+        reqs.iter()
             .map(|req| format!("- {}", mk_req(req)))
             .collect::<Vec<_>>()
             .join("\n")
@@ -495,7 +497,7 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Node<N, E> {
             .copied()
             .collect::<FxHashSet<_>>();
         snafu::ensure!(
-            both_moved.len() == 0,
+            both_moved.is_empty(),
             MovedMoreThanOnceSnafu {
                 here: self.name.clone(),
                 there: other.name.clone()
@@ -592,6 +594,11 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Dag<N, E> {
         self.nodes.len()
     }
 
+    /// Returns whether the Dag is empty.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
     /// Add a node.
     pub fn with_node(mut self, node: Node<N, E>) -> Self {
         self.add_node(node);
@@ -635,7 +642,6 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Dag<N, E> {
     }
 
     fn get_nodes_with_input(&self, result: E) -> impl Iterator<Item = &Node<N, E>> + '_ {
-        let result = result.clone();
         self.nodes
             .iter()
             .filter(move |node| node.all_inputs().contains(&result))
@@ -669,7 +675,7 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Dag<N, E> {
             node.moves.is_empty()
                 && node.reads.is_empty()
                 && node.writes.is_empty()
-                && node.run_after.len() == 0
+                && node.run_after.is_empty()
         })
     }
 
@@ -736,7 +742,7 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Dag<N, E> {
         }
 
         let mut batches: Vec<Vec<Node<N, E>>> = Vec::new();
-        batches.resize_with(self.nodes.len(), || vec![]);
+        batches.resize_with(self.nodes.len(), std::vec::Vec::new);
 
         for (node_name, domain) in solver.domains.into_iter() {
             // UNWRAP: safe because these names came from the nodes themselves
@@ -833,7 +839,7 @@ fn dag_schedule<T, E: Copy + PartialEq + Eq + std::hash::Hash>(dag: Dag<T, E>) -
         .collect::<Vec<_>>()
 }
 
-fn as_strs(vs: &Vec<String>) -> Vec<&str> {
+fn as_strs(vs: &[String]) -> Vec<&str> {
     vs.iter().map(|s| s.as_str()).collect::<Vec<_>>()
 }
 
@@ -981,7 +987,7 @@ mod tests {
             dag.get_missing_inputs().into_iter().collect::<Vec<_>>()
         );
 
-        let _legend = DagLegend::new(dag.nodes())
+        DagLegend::new(dag.nodes())
             .with_name("blah")
             .with_resources_named(|rez| {
                 if rez == &a {
