@@ -11,6 +11,9 @@ pub enum DotError {
 
     #[snafu(display("{}", source))]
     Dot { source: dot2::Error },
+
+    #[snafu(display("{msg}"))]
+    Schedule { msg: String },
 }
 
 const GHOST_ROOT_NAME: &str = r#"required_resources"#;
@@ -26,7 +29,7 @@ pub struct DagLegend<E> {
 }
 
 impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
-    pub fn new<'a, N: Any>(nodes: impl Iterator<Item = &'a Node<N, E>>) -> Self {
+    pub fn new<'a, N: Any>(nodes: impl Iterator<Item = &'a Node<N, E>>) -> Result<Self, DotError> {
         let resource_labels = FxHashMap::default();
         let mut node_ids = FxHashMap::default();
         let mut new_dag = Dag::default();
@@ -38,7 +41,10 @@ impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
             }
             new_dag.add_node(node_to_dot_node(node));
         }
-        let schedule = new_dag.clone().build_schedule().unwrap();
+        let schedule = new_dag
+            .clone()
+            .build_schedule()
+            .map_err(|e| ScheduleSnafu { msg: e.to_string() }.build())?;
         let missing_inputs = new_dag.get_missing_inputs();
         let root = if missing_inputs.is_empty() {
             None
@@ -49,14 +55,14 @@ impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
                 node
             })
         };
-        DagLegend {
+        Ok(DagLegend {
             resource_labels,
             node_ids,
             name: String::new(),
             dag: new_dag,
             schedule,
             root,
-        }
+        })
     }
 
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
@@ -64,8 +70,8 @@ impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
         self
     }
 
-    pub fn with_resources_named(mut self, f: impl Fn(&E) -> String) -> Self {
-        for node in self.dag.nodes() {
+    pub fn with_resources_named(mut self, mut f: impl FnMut(&E) -> Option<String>) -> Self {
+        'outer: for node in self.dag.nodes() {
             let resources = node
                 .all_inputs()
                 .into_iter()
@@ -74,10 +80,24 @@ impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
                 if self.resource_labels.contains_key(&resource) {
                     continue;
                 }
-                let name = f(&resource);
-                self.resource_labels.insert(resource, name);
+                if let Some(name) = f(&resource) {
+                    self.resource_labels.insert(resource, name);
+                } else {
+                    break 'outer;
+                }
             }
         }
+        self
+    }
+
+    pub fn with_resources(
+        mut self,
+        resources: impl IntoIterator<Item = (E, impl AsRef<str>)>,
+    ) -> Self {
+        let resources = resources
+            .into_iter()
+            .map(|(k, v)| (k, v.as_ref().to_owned()));
+        self.resource_labels.extend(resources);
         self
     }
 
@@ -88,13 +108,13 @@ impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash> DagLegend<E> {
 
 impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash + std::fmt::Debug> DagLegend<E> {
     pub fn with_resource_debug_names(self) -> Self {
-        self.with_resources_named(|r| format!("{r:?}"))
+        self.with_resources_named(|r| Some(format!("{r:?}")))
     }
 }
 
 impl<E: Any + Copy + PartialEq + Eq + std::hash::Hash + std::fmt::Display> DagLegend<E> {
     pub fn with_resource_display_names(self) -> Self {
-        self.with_resources_named(|r| format!("{r}"))
+        self.with_resources_named(|r| Some(format!("{r}")))
     }
 }
 
@@ -153,13 +173,11 @@ impl<'a, E: Copy + PartialEq + Eq + std::hash::Hash> dot2::Labeller<'a> for DagL
     }
 
     fn node_id(&'a self, n: &Self::Node) -> dot2::Result<dot2::Id<'a>> {
-        println!("name: {}", n.name);
         let id = self
             .node_ids
             .get(&n.name)
             .map(|id| format!("node_{id}"))
             .unwrap_or_else(|| "ghost_node".to_string());
-        println!("id:{id}");
         Ok(dot2::Id::new(id).unwrap())
     }
 
@@ -204,7 +222,6 @@ impl<'a, E: Copy + PartialEq + Eq + std::hash::Hash> dot2::Labeller<'a> for DagL
     }
 
     fn node_style(&'a self, n: &Self::Node) -> dot2::Style {
-        println!("{}", n.name);
         if n.name.as_str() == GHOST_ROOT_NAME {
             dot2::Style::Dotted
         } else {

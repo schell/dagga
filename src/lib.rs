@@ -796,6 +796,19 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Dag<N, E> {
     pub fn take_nodes(&mut self) -> Vec<Node<N, E>> {
         std::mem::take(&mut self.nodes)
     }
+
+    #[cfg(feature = "dot")]
+    /// Create a legend for this graph, if possible.
+    ///
+    /// ## Errors
+    /// Errs if a schedule could not be built for the graph.
+    pub fn legend(&self) -> Result<crate::dot::DagLegend<E>, crate::dot::DotError>
+    where
+        N: 'static,
+        E: 'static,
+    {
+        crate::dot::DagLegend::new(self.nodes())
+    }
 }
 
 /// A built dag schedule.
@@ -929,16 +942,19 @@ mod tests {
         );
 
         let legend = DagLegend::new(dag.nodes())
+            .unwrap()
             .with_name("example")
             .with_resources_named(|rez| {
-                if rez == &a {
-                    "A"
-                } else if rez == &b {
-                    "B"
-                } else {
-                    "C"
-                }
-                .to_string()
+                Some({
+                    if rez == &a {
+                        "A"
+                    } else if rez == &b {
+                        "B"
+                    } else {
+                        "C"
+                    }
+                    .to_string()
+                })
             });
         save_as_dot(&legend, "example.dot").unwrap();
     }
@@ -988,16 +1004,19 @@ mod tests {
         );
 
         DagLegend::new(dag.nodes())
+            .unwrap()
             .with_name("blah")
             .with_resources_named(|rez| {
-                if rez == &a {
-                    "A1"
-                } else if rez == &b {
-                    "B2"
-                } else {
-                    "C3"
-                }
-                .to_string()
+                Some({
+                    if rez == &a {
+                        "A1"
+                    } else if rez == &b {
+                        "B2"
+                    } else {
+                        "C3"
+                    }
+                    .to_string()
+                })
             })
             .save_to("blah.dot")
             .unwrap();
