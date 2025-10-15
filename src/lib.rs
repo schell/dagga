@@ -637,6 +637,15 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Dag<N, E> {
     /// A barrier will cause any nodes added after the barrier to be scheduled
     /// after the barrier.
     pub fn with_barrier(mut self) -> Self {
+        self.add_barrier();
+        self
+    }
+
+    /// Adds a barrier to the graph.
+    ///
+    /// A barrier will cause any nodes added after the barrier to be scheduled
+    /// after the barrier.
+    pub fn add_barrier(&mut self) -> &mut Self {
         self.barrier += 1;
         self
     }
