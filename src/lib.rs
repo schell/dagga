@@ -827,6 +827,12 @@ pub struct Schedule<T> {
     pub batches: Vec<Vec<T>>,
 }
 
+impl<T> Default for Schedule<T> {
+    fn default() -> Self {
+        Schedule { batches: vec![] }
+    }
+}
+
 impl<N, E> Schedule<Node<N, E>> {
     pub fn batched_names(&self) -> Vec<Vec<&str>> {
         self.batches
