@@ -48,7 +48,8 @@ pub enum DaggaError {
     CannotSolve { constraint: Constraint },
 }
 
-/// An error that occurs during schedule building that can give back the erroneous `Dag`.
+/// An error that occurs during schedule building that can give back the
+/// erroneous `Dag`.
 #[derive(Snafu)]
 #[snafu(display("Cannot build schedule: {source}"))]
 pub struct BuildScheduleError<T, E> {
@@ -479,11 +480,13 @@ impl<N, E: Copy + PartialEq + Eq + std::hash::Hash> Node<N, E> {
 
         if self.barrier != other.barrier {
             let entry = cs
-                .entry(if self.barrier > other.barrier {
-                    Op::Gt
-                } else {
-                    Op::Lt
-                })
+                .entry(
+                    if self.barrier > other.barrier {
+                        Op::Gt
+                    } else {
+                        Op::Lt
+                    },
+                )
                 .or_default();
             entry.push(RequirementReason::Barrier);
         }
